@@ -5,17 +5,12 @@ import mysqlopt
 from fastapi import FastAPI
 import git
 import re
-import tqdm
 
-global COMPONENT, CMDMODULE, FILELIST, VERSION
+global COMPONENT, CMDMODULE, FILELIST, VERSION, CHANGEMODE
 conn = mysqlopt.mysql_opt()
 app = FastAPI()
 
 FILELIST = []
-
-fo = open('pr_check_result', 'a+', encoding='utf-8')
-fo.write('-------begin-------\n')
-
 
 def pull_new_pr(repo):
 
@@ -81,7 +76,7 @@ def get_config_file_by_component(component):
     elif component == 'tiflash':
         configfile = ['/dbms/src/Interpreters/Settings.h']
     elif component == 'sysvar':
-        configfile = ['/sessionctx/variable/sysvar.go','/sessionctx/variable/tidb-vars.go']
+        configfile = ['/sessionctx/variable/sysvar.go','/sessionctx/variable/tidb_vars.go']
 
     print("blame file is :", configfile)
     return configfile
@@ -93,7 +88,7 @@ def blame_file_get_commit_id(file,config,repo):
     myrepo = git.Repo(path=tem_path)
     # mygit = myrepo.git
     blame = myrepo.blame(None,file)
-    print("blame response length:", len(blame))
+    # print("blame response length:", len(blame))
     min_time = check_version_valid(VERSION)
     print("min_time=", min_time)
     for commit in blame:
@@ -104,7 +99,7 @@ def blame_file_get_commit_id(file,config,repo):
         if str(commit_info).find(config)!=-1:
             if commit_time < min_time:
                 continue
-            print("commit id:{0}, commit time: {1}".format(commit,commit_time))
+            # print("commit id:{0}, commit time: {1}".format(commit,commit_time))
             commit_id_list.append(commit_obj)
 
     print("commit_id_list is : ",commit_id_list)
@@ -122,7 +117,7 @@ def get_commit_id_list_by_config(config):
     configfile = get_config_file_by_component(COMPONENT)
     tem_path = '/Users/tingli/git/{}'.format(repo)
     for f in configfile:
-        print("f=",f)
+        # print("f=",f)
         fn = tem_path+f
         commit_id = blame_file_get_commit_id(fn,config, repo)
         for id in commit_id:
@@ -139,7 +134,6 @@ def get_pr_list_by_commit_id(idlist):
     else: repo = COMPONENT
     pr_list = []
     for id in idlist:
-        print("------begin to git show commit id ")
         tem_path = '/Users/tingli/git/{}'.format(repo)
         myrepo = git.Repo(path=tem_path)
         res = myrepo.git.show(id)
@@ -149,24 +143,50 @@ def get_pr_list_by_commit_id(idlist):
             begin = res.index('(#')
             end = res.index(')')
             pr_no = res[begin+2:end]
-            print("pr_no is: ",pr_no)
+            # print("pr_no is: ",pr_no)
             pr_list.append(pr_no)
         else:
             print("no pr line:", res)
     return pr_list
 
+def change_id_link(pr_list):
+    pre_str = ""
+    link_list = []
+    if COMPONENT == "tikv":
+        pre_str = "https://github.com/tikv/tikv/pull/"
+    elif COMPONENT == "tidb" or COMPONENT == "sysvar":
+        pre_str = "https://github.com/pingcap/tidb/pull/"
+    elif COMPONENT == "pd":
+        pre_str = "https://github.com/tikv/pd/"
+    elif COMPONENT == "tiflash":
+        pre_str = "https://github.com/pingcap/tidb/pull/"
+    for pr in pr_list:
+        link_list.append(pre_str + pr)
+    return link_list
 
 def get_pr_list_for_one_config(config):
     if COMPONENT == "tikv" or COMPONENT == "tiflash":
         config = config.replace('-', '_')
+    if CHANGEMODE == 'update':
+        chars = re.split('-|_',config)
+        new = ''
+        for i in chars:
+            new.join(i.capitalize())
+        config = new
     print("begin get_pr_list_for_one_config, config=",config)
     commitID_list = get_commit_id_list_by_config(config.strip())
     pr_list = get_pr_list_by_commit_id(commitID_list)
-    print("config changed by pr:", pr_list)
-    return pr_list
+    pr_link_list = change_id_link(pr_list)
+    print("config changed by pr:", pr_link_list)
+    return pr_link_list
 
 def get_pr_list_for_config_list():
+    global CHANGEMODE
     print("------begion to get_pr_list_for_config_list")
+
+    fo = open('pr_check_result', 'w+', encoding='utf-8')
+    fo.write('-------begin-------\n')
+
     for component in FILELIST:
         file_name = "{}_change_list.txt".format(component)
         COMPONENT = component
@@ -175,9 +195,15 @@ def get_pr_list_for_config_list():
         fc = open(file_name, 'r+', encoding='utf-8')
 
         for line in fc.readlines():
-            config_item = line.strip()
+            param = str(line).split(' ')
+            if line == '' or param == []:
+                continue
+            config_item = param[0].strip()
             if COMPONENT == "tikv" or COMPONENT == "tiflash":
                 config_item.replace('-','_')
+
+            CHANGEMODE = param[1].strip()
+            print("config_item:%s,change_mode:%s", config_item,CHANGEMODE)
             pr_list = get_pr_list_for_one_config(config_item)
             fo.write("{0} : {1}\n".format(config_item,pr_list))
 
@@ -188,6 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', help="config item")
     parser.add_argument('-v', '--version', help="search pr after this version released")
     parser.add_argument('-cp', '--component', help="component config belong to")
+    parser.add_argument('-cm', '--changemode', help="add/update/delete")
     # parser.add_argument('-h', '--help', help="help info")
 
     args = parser.parse_args()
@@ -209,7 +236,9 @@ if __name__ == '__main__':
         COMPONENT = args.component
         check_component_valid(args.component)
 
-
+    if args.changemode is None:
+        CHANGEMODE = 'add'
+    else: CHANGEMODE = args.changemode
 
     # if have a special version to check, and a filter to get pr which merged time is newer than this version released
     if args.version is not None:
