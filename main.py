@@ -12,22 +12,23 @@ app = FastAPI()
 
 FILELIST = []
 
-def pull_new_pr(repo):
-
-    print("------begin to pull latest pr ")
-    tem_path = '/Users/tingli/git/{}'.format(repo)
-    myrepo = git.Repo(path=tem_path)
-    mygit = myrepo.git
-    res = mygit.checkout('{}'.format("master"))
-    print("----------checkout result:", res)
-    res = mygit.status()
-    print("----------current branch:",res)
-    if (str(res).find('{}'.format('error')) != -1):
-        exit(2)
-    res = mygit.pull()
-    print(res)
-    if (str(res).find('error') != -1):
-        exit(2)
+def pull_new_pr():
+    repos = ['tidb','tikv','pd','tiflash']
+    for i in repos:
+        print("------begin to pull latest pr ")
+        tem_path = '/Users/tingli/git/{}'.format(i)
+        myrepo = git.Repo(path=tem_path)
+        mygit = myrepo.git
+        res = mygit.checkout('{}'.format("master"))
+        print("----------checkout result:", res)
+        res = mygit.status()
+        print("----------current branch:",res)
+        if (str(res).find('{}'.format('error')) != -1):
+            exit(2)
+        res = mygit.pull()
+        print(res)
+        if (str(res).find('error') != -1):
+            exit(2)
 
 def check_version_valid(version):
     # print("------begin to check_version_valid and get release date by version, version=",version)
@@ -70,7 +71,7 @@ def get_config_file_by_component(component):
     if component == 'tidb':
         configfile = ['/config/config.go']
     elif component == 'tikv':
-        configfile = ['/src/config.rs']
+        configfile = ['/src/config.rs','/components/raftstore/src/store/config.rs']
     elif component == 'pd':
         configfile = ['/server/config/config.go']
     elif component == 'tiflash':
@@ -112,8 +113,6 @@ def get_commit_id_list_by_config(config):
         repo = 'tidb'
     else:
         repo = COMPONENT
-    # sync new pr
-    pull_new_pr(repo)
     configfile = get_config_file_by_component(COMPONENT)
     tem_path = '/Users/tingli/git/{}'.format(repo)
     for f in configfile:
@@ -181,36 +180,136 @@ def get_pr_list_for_one_config(config):
     return pr_link_list
 
 def get_pr_list_for_config_list():
-    global CHANGEMODE
+    global CHANGEMODE, COMPONENT
     print("------begion to get_pr_list_for_config_list")
 
-    fo = open('pr_check_result', 'w+', encoding='utf-8')
-    fo.write('-------begin-------\n')
+    foo = open('pr_check_result', 'w+', encoding='utf-8')
+    foo.write('-------begin-------\n')
 
-    for component in FILELIST:
+    for component in ['tidb','tikv','pd','tiflash','sysvar']:
         file_name = "{}_change_list.txt".format(component)
         COMPONENT = component
         print("begin to parse config list in:", file_name)
-        fo.write("\n-----result for {} change list-----\n".format(COMPONENT))
+        foo.write("\n-----result for {} change list-----\n".format(COMPONENT))
         fc = open(file_name, 'r+', encoding='utf-8')
 
         for line in fc.readlines():
-            param = str(line).split(' ')
+            param = str(line).split(',')
             if line == '' or param == []:
                 continue
-            config_item = param[0].strip()
+            config_item = param[0].split('=')[0].strip()
+            last_config = config_item.split('.')[-1]
             if COMPONENT == "tikv" or COMPONENT == "tiflash":
-                config_item.replace('-','_')
+                last_config = last_config.replace('-','_')
 
             CHANGEMODE = param[1].strip()
             print("config_item:%s,change_mode:%s", config_item,CHANGEMODE)
-            pr_list = get_pr_list_for_one_config(config_item)
-            fo.write("{0} : {1}\n".format(config_item,pr_list))
+            pr_list = get_pr_list_for_one_config(last_config)
+            foo.write("{0} : {1}\n".format(config_item,pr_list))
+    foo.close()
+
+def get_new_added_list(repo,oldversion,newversion,file):
+    sql_str = "SELECT  *, 'add' FROM \
+                 ( SELECT \
+                    b.item_name, \
+                    a.default_value AS 'version1', \
+                    b.default_value AS 'version2', \
+                    b.value_type AS 'type' \
+                   FROM  ( \
+                    SELECT *  FROM tbl_{2} WHERE version = '{0}') a \
+                   RIGHT JOIN (\
+                    SELECT  item_name, default_value,value_type FROM tbl_{2} WHERE  version = '{1}' \
+                 ) b ON a.item_name = b.item_name ) c where c.version1 is null;".format(oldversion, newversion, repo)
+    res = conn.ExecQuery(sql_str)
+    print(res)
+
+    if len(res) == 0:
+        return
+
+    for i in res:
+        if str(i[0]).startswith("raftstore-proxy") and repo == 'tiflash':
+            continue
+        if i[3] == 'str':
+            value = "'" + str(i[2]).replace('\n','') + "'"
+        else: value = str(i[2]).replace('\n','')
+        item = i[0] + '=' + value + ',' + i[-1]
+        file.write(item)
+        file.write("\n")
+
+def get_deleted_list(repo,oldversion,newversion,file):
+    sql_str = "SELECT  *, 'delete' FROM \
+                 ( SELECT \
+                    a.item_name, \
+                    a.default_value AS 'version1', \
+                    b.default_value AS 'version2', \
+                    a.value_type AS 'type' \
+                   FROM  ( \
+                    SELECT  item_name, default_value, value_type FROM tbl_{2} WHERE version = '{0}') a \
+                   LEFT JOIN (\
+                    SELECT  * FROM tbl_{2} WHERE  version = '{1}' \
+                 ) b ON a.item_name = b.item_name ) c where c.version2 is null;".format(oldversion,newversion,repo)
+    res = conn.ExecQuery(sql_str)
+    print(res)
+
+    if len(res) == 0:
+        return
+
+    for i in res:
+        if str(i[0]).startswith("raftstore-proxy") and repo=='tiflash':
+            continue
+        if i[3] == 'str':
+            value = "'" + str(i[1]).replace('\n','') + "'"
+        else: value = str(i[1]).replace('\n','')
+        item = i[0] + '=' + value + ',' + i[-1]
+        file.write(item)
+        file.write("\n")
+
+def get_update_list(repo,oldversion,newversion,file):
+    sql_str = "SELECT  *, 'update' FROM \
+                     ( SELECT \
+                        a.item_name, \
+                        a.default_value AS 'version1', \
+                        b.default_value AS 'version2', \
+                        a.value_type AS 'type' \
+                       FROM  ( \
+                        SELECT  * FROM tbl_{2} WHERE version = '{0}') a \
+                        JOIN (\
+                        SELECT  item_name, default_value,value_type  FROM tbl_{2} WHERE  version = '{1}' \
+                     ) b ON a.item_name = b.item_name ) c where c.version2<>c.version1;".format(oldversion, newversion,
+                                                                                            repo)
+    res = conn.ExecQuery(sql_str)
+    print(res)
+
+    if len(res) == 0:
+        return
+
+    for i in res:
+        if str(i[0]).startswith("raftstore-proxy") and repo=='tiflash':
+            continue
+        if i[3] == '\'str\'':
+            value = "'" + str(i[1]).replace('\n','') + "'"
+        else: value = str(i[1]).replace('\n','')
+
+        item = i[0] + '=' + value + ',' + i[-1]
+        file.write(item)
+        file.write("\n")
+
+def get_config_diff(old,new):
+    l_repo = ['tidb', 'tikv', 'pd', 'tiflash', 'sysvar']
+    for i in l_repo:
+        file_name = "{}_change_list.txt".format(i)
+        print("begin to create:", file_name)
+        fo = open(file_name, 'w+', encoding='utf-8')
+        get_new_added_list(i,old, new,fo)
+        get_deleted_list(i,old,new,fo)
+        get_update_list(i,old,new,fo)
+        fo.close()
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('-m', '--checkmode', help="cmd/file")
     parser.add_argument('-c', '--config', help="config item")
     parser.add_argument('-v', '--version', help="search pr after this version released")
     parser.add_argument('-cp', '--component', help="component config belong to")
@@ -218,38 +317,39 @@ if __name__ == '__main__':
     # parser.add_argument('-h', '--help', help="help info")
 
     args = parser.parse_args()
-    if args.config is None:
-        # get config item from file
-        CMDMODULE = "file"
-        check_config_list_file_exist()
-        if FILELIST == []:
-            print("please add config change list or special the config item by -c")
+    if args.checkmode == 'cmd':
+        CMDMODULE = "cmd"
+        if args.config is None:
+            print("please special the config item by -c")
             exit(1)
-    else:
-        # get config item from command line
-        CMDMODULE = "cml"
-
-    if args.component is None:
-        print("please input component to search in")
-        exit(1)
-    else:
-        COMPONENT = args.component
-        check_component_valid(args.component)
-
-    if args.changemode is None:
-        CHANGEMODE = 'add'
-    else: CHANGEMODE = args.changemode
+        if args.component is None:
+            print("please input component to search in")
+            exit(1)
+        else:
+            COMPONENT = args.component
+            check_component_valid(args.component)
+        if args.changemode is None:
+            CHANGEMODE = 'add'
+        else: CHANGEMODE = args.changemode
+    elif args.checkmode == 'file':
+        CMDMODULE = "file"
 
     # if have a special version to check, and a filter to get pr which merged time is newer than this version released
     if args.version is not None:
         check_version_valid(args.version)
         VERSION = args.version
+    # sync new pr
+    # pull_new_pr()
+    # get_config_diff('6.2.0','6.3.0')
+    # check_config_list_file_exist()
 
-    if CMDMODULE == 'cml':
+    if CMDMODULE == 'cmd':
         get_pr_list_for_one_config(args.config)
-
     else:
         get_pr_list_for_config_list()
+
+
+    conn.Close()
 
 
 
