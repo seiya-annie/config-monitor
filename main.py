@@ -231,6 +231,8 @@ def get_new_added_list(repo,oldversion,newversion,file):
             continue
         if str(i[0]).startswith("schedule.store-limit") and repo == 'pd':
             continue
+        if str(i[0]) == 'version' and repo == 'sysvar':
+            continue
         if i[3] == 'str':
             value = "'" + str(i[2]).replace('\n','') + "'"
         else: value = str(i[2]).replace('\n','')
@@ -257,7 +259,12 @@ def get_deleted_list(repo,oldversion,newversion,file):
         return
 
     for i in res:
-        if str(i[0]).startswith("raftstore-proxy") and repo=='tiflash':
+        if (str(i[0]).startswith("raftstore-proxy") or str(i[0]).startswith(
+                "engine-store.flash.tidb_status_addr")) and repo == 'tiflash':
+            continue
+        if str(i[0]).startswith("schedule.store-limit") and repo == 'pd':
+            continue
+        if str(i[0]) == 'version' and repo == 'sysvar':
             continue
         if i[3] == 'str':
             value = "'" + str(i[1]).replace('\n','') + "'"
@@ -265,7 +272,8 @@ def get_deleted_list(repo,oldversion,newversion,file):
         item = i[0] + '=' + value + ',' + i[-1]
         file.write(item)
         file.write("\n")
-        topo.write(i[0] + ': ' + value + "\n")
+        if repo != 'sysvar':
+            topo.write(i[0] + ': ' + value + "\n")
 
 def get_update_list(repo,oldversion,newversion,file):
     sql_str = "SELECT  *, 'update' FROM \
@@ -287,7 +295,12 @@ def get_update_list(repo,oldversion,newversion,file):
         return
 
     for i in res:
-        if str(i[0]).startswith("raftstore-proxy") and repo=='tiflash':
+        if (str(i[0]).startswith("raftstore-proxy") or str(i[0]).startswith(
+                "engine-store.flash.tidb_status_addr")) and repo == 'tiflash':
+            continue
+        if str(i[0]).startswith("schedule.store-limit") and repo == 'pd':
+            continue
+        if str(i[0]) == 'version' and repo == 'sysvar':
             continue
         if i[3] == '\'str\'':
             value = "'" + str(i[1]).replace('\n','') + "'"
@@ -296,7 +309,8 @@ def get_update_list(repo,oldversion,newversion,file):
         item = i[0] + '=' + value + ',' + i[-1]
         file.write(item)
         file.write("\n")
-        topo.write(i[0] + '=' + value + "\n")
+        if repo != 'sysvar':
+            topo.write(i[0] + '=' + value + "\n")
 
 def get_config_diff(old,new):
     l_repo = ['tidb', 'tikv', 'pd', 'tiflash', 'sysvar']
@@ -304,7 +318,8 @@ def get_config_diff(old,new):
     for i in l_repo:
         file_name = "{}_change_list.txt".format(i)
         # print("begin to create:", file_name)
-        topo.write(i+":\n")
+        if i != 'sysvar':
+            topo.write(i+":\n")
         fo = open(file_name, 'w+', encoding='utf-8')
         get_new_added_list(i,old, new,fo)
         get_deleted_list(i,old,new,fo)
