@@ -2,15 +2,14 @@
 import argparse
 import os
 import mysqlopt
-from fastapi import FastAPI
 import git
 import re
 
 global COMPONENT, CMDMODULE, FILELIST, VERSION, CHANGEMODE
 conn = mysqlopt.mysql_opt()
-app = FastAPI()
-
+topo = open("topo.yaml", 'w+', encoding='utf-8')
 FILELIST = []
+
 
 def pull_new_pr():
     repos = ['tidb','tikv','pd','tiflash']
@@ -71,7 +70,8 @@ def get_config_file_by_component(component):
     if component == 'tidb':
         configfile = ['/config/config.go']
     elif component == 'tikv':
-        configfile = ['/src/config.rs','/components/raftstore/src/store/config.rs']
+        configfile = ['/src/config.rs','/components/raftstore/src/store/config.rs',
+                      '/components/causal_ts/src/config.rs']
     elif component == 'pd':
         configfile = ['/server/config/config.go']
     elif component == 'tiflash':
@@ -103,7 +103,7 @@ def blame_file_get_commit_id(file,config,repo):
             # print("commit id:{0}, commit time: {1}".format(commit,commit_time))
             commit_id_list.append(commit_obj)
 
-    print("commit_id_list is : ",commit_id_list)
+    # print("commit_id_list is : ",commit_id_list)
     return commit_id_list
 
 def get_commit_id_list_by_config(config):
@@ -127,7 +127,7 @@ def get_commit_id_list_by_config(config):
     return c_list
 
 def get_pr_list_by_commit_id(idlist):
-    print("begin to get_pr_list_by_commit_id, idlist=",idlist)
+    # print("begin to get_pr_list_by_commit_id, idlist=",idlist)
     if COMPONENT == 'sysvar':
         repo = 'tidb'
     else: repo = COMPONENT
@@ -221,13 +221,15 @@ def get_new_added_list(repo,oldversion,newversion,file):
                     SELECT  item_name, default_value,value_type FROM tbl_{2} WHERE  version = '{1}' \
                  ) b ON a.item_name = b.item_name ) c where c.version1 is null;".format(oldversion, newversion, repo)
     res = conn.ExecQuery(sql_str)
-    print(res)
+    # print(res)
 
     if len(res) == 0:
         return
 
     for i in res:
-        if str(i[0]).startswith("raftstore-proxy") and repo == 'tiflash':
+        if (str(i[0]).startswith("raftstore-proxy") or str(i[0]).startswith("engine-store.flash.tidb_status_addr")) and repo == 'tiflash':
+            continue
+        if str(i[0]).startswith("schedule.store-limit") and repo == 'pd':
             continue
         if i[3] == 'str':
             value = "'" + str(i[2]).replace('\n','') + "'"
@@ -249,7 +251,7 @@ def get_deleted_list(repo,oldversion,newversion,file):
                     SELECT  * FROM tbl_{2} WHERE  version = '{1}' \
                  ) b ON a.item_name = b.item_name ) c where c.version2 is null;".format(oldversion,newversion,repo)
     res = conn.ExecQuery(sql_str)
-    print(res)
+    # print(res)
 
     if len(res) == 0:
         return
@@ -263,6 +265,7 @@ def get_deleted_list(repo,oldversion,newversion,file):
         item = i[0] + '=' + value + ',' + i[-1]
         file.write(item)
         file.write("\n")
+        topo.write(i[0] + ': ' + value + "\n")
 
 def get_update_list(repo,oldversion,newversion,file):
     sql_str = "SELECT  *, 'update' FROM \
@@ -278,7 +281,7 @@ def get_update_list(repo,oldversion,newversion,file):
                      ) b ON a.item_name = b.item_name ) c where c.version2<>c.version1;".format(oldversion, newversion,
                                                                                             repo)
     res = conn.ExecQuery(sql_str)
-    print(res)
+    # print(res)
 
     if len(res) == 0:
         return
@@ -293,12 +296,15 @@ def get_update_list(repo,oldversion,newversion,file):
         item = i[0] + '=' + value + ',' + i[-1]
         file.write(item)
         file.write("\n")
+        topo.write(i[0] + '=' + value + "\n")
 
 def get_config_diff(old,new):
     l_repo = ['tidb', 'tikv', 'pd', 'tiflash', 'sysvar']
+
     for i in l_repo:
         file_name = "{}_change_list.txt".format(i)
-        print("begin to create:", file_name)
+        # print("begin to create:", file_name)
+        topo.write(i+":\n")
         fo = open(file_name, 'w+', encoding='utf-8')
         get_new_added_list(i,old, new,fo)
         get_deleted_list(i,old,new,fo)
@@ -314,6 +320,8 @@ if __name__ == '__main__':
     parser.add_argument('-v', '--version', help="search pr after this version released")
     parser.add_argument('-cp', '--component', help="component config belong to")
     parser.add_argument('-cm', '--changemode', help="add/update/delete")
+    parser.add_argument('-ov', '--oldversion', help="old version for diff config")
+    parser.add_argument('-nv', '--newversion', help="new version for diff config")
     # parser.add_argument('-h', '--help', help="help info")
 
     args = parser.parse_args()
@@ -333,15 +341,23 @@ if __name__ == '__main__':
         else: CHANGEMODE = args.changemode
     elif args.checkmode == 'file':
         CMDMODULE = "file"
+        if args.oldversion is None:
+            print("please input old version by -ov")
+            exit(1)
+        if args.newversion is None:
+            print("please input new version by -ov")
+            exit(1)
 
     # if have a special version to check, and a filter to get pr which merged time is newer than this version released
     if args.version is not None:
         check_version_valid(args.version)
         VERSION = args.version
+    else: VERSION = args.oldversion
     # sync new pr
-    # pull_new_pr()
-    # get_config_diff('6.2.0','6.3.0')
-    # check_config_list_file_exist()
+    pull_new_pr()
+    print("begin to diff cofig for {0} and {1}".format(args.oldversion,args.newversion))
+    get_config_diff(args.oldversion,args.newversion)
+    check_config_list_file_exist()
 
     if CMDMODULE == 'cmd':
         get_pr_list_for_one_config(args.config)
@@ -350,6 +366,7 @@ if __name__ == '__main__':
 
 
     conn.Close()
+    topo.close()
 
 
 
