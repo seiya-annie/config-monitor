@@ -332,7 +332,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-m', '--checkmode', help="cmd/file")
     parser.add_argument('-c', '--config', help="config item")
-    parser.add_argument('-v', '--version', help="search pr after this version released")
+    parser.add_argument('-mv', '--version', help="search pr after this version released")
     parser.add_argument('-cp', '--component', help="component config belong to")
     parser.add_argument('-cm', '--changemode', help="add/update/delete")
     parser.add_argument('-ov', '--oldversion', help="old version for diff config")
